@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools >= 70", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ligotools"
+authors = [
+  { name="Ligo Scientific Collaboration (LSC) and Marcel Gunadi", email="marceladg@berkeley.edu" },
+]
+description = "Ligotools package"
+readme = "README.md"
+
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "h5py",
+    "decorator",
+    "ipython",
+    "ipykernel"
+]
+
+license = "BSD-3-Clause"
+license-files = ["LICEN[CS]E*"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent"
+]
+
+
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/MarcelGunadi/ligotools"
+Issues = "https://github.com/MarcelGunadi/ligotools/issues"
+
+[tool.setuptools]
+packages = ["ligotools"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ligotools.__version__"}
