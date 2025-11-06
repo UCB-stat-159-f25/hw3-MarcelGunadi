@@ -1,0 +1,16 @@
+version: 1
+
+project:
+  title: HW 3
+  authors: [Marcel, Ligo Scientific Collaboration]
+  github: https://github.com/MarcelGunadi/hw3-MarcelGunadi
+  toc:
+    - file: homepage.md
+      title: "Binder"
+    - file: LOSC_Event_tutorial.ipynb
+      title: "LOSC Event Notebook"
+
+site:
+  template: book-theme
+  options:
+    tabs: true
