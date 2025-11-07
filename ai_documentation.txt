@@ -1,0 +1,233 @@
+1) Explain what the function dq_channel_to_seglist does
+
+Here’s what `dq_channel_to_seglist` does, step by step:
+
+1. **Accepts a 1 Hz “data-quality” channel**
+
+   * `channel` is a 1D array sampled at **1 sample/second** where values `> 0` mean “good/valid data”; `≤ 0` mean “bad”.
+   * If `channel` is a dict, it tries to use `channel['DEFAULT']` (otherwise raises).
+
+2. **Finds contiguous “good” intervals (in seconds)**
+
+   * `condition = channel > 0` → boolean mask (True = good).
+   * `np.diff(condition)` gives `+1` at **rising edges** (False→True) and `-1` at falling edges (True→False).
+   * `np.where(np.diff(condition) == True)[0]` picks indices where the diff is `+1` (i.e., starts of good segments).
+   * `+1` shifts those to the first True index of each segment.
+   * If the array **starts** True, it prepends `0`.
+   * If the array **ends** True, it appends `len(condition)` (one-past-the-end) to close the last segment.
+   * The result is an even-length array of boundaries like `[start0, stop0, start1, stop1, ...]`, which it reshapes into `[[start, stop], ...]` (units: **seconds**, because the input is 1 Hz).
+
+3. **Converts second-index boundaries to sample-index slices**
+
+   * Given the strain data are sampled at `fs` (default **4096 Hz**), it multiplies each boundary by `fs` to get **sample indices**.
+   * For each `[start, stop]`, it builds `slice(start*fs, stop*fs)`.
+
+4. **Returns**
+
+   * A **list of Python `slice` objects**, each directly usable to index the strain (and corresponding time) arrays returned by `LOADDATA`.
+   * If there are no good intervals, it returns an **empty list**.
+
+---
+
+### Tiny example
+
+If `channel` (1 Hz) over 10 s is:
+
+```
+[0,0,1,1,1,0,0,1,1,0]
+```
+
+Good segments (seconds) are `[2,5)` and `[7,9)`.
+With `fs=4096`, you get:
+
+```
+[slice(2*4096, 5*4096), slice(7*4096, 9*4096)]
+```
+
+You can then do `strain[slice_i]` to extract just the valid data chunks.
+
+
+2) Explain what the functions whiten, write_wavfile, reqshift, and plot_results do.
+
+Here’s what each function is doing, in plain English—plus a few gotchas to keep in mind.
+
+---
+
+### `whiten(strain, interp_psd, dt)`
+
+**Goal:** flatten (“whiten”) the noise spectrum of a time-series so all frequencies have ~unit variance.
+
+**How it works:**
+
+1. Compute the positive-frequency grid for an RFFT: `freqs = np.fft.rfftfreq(Nt, dt)`.
+2. Go to frequency domain: `hf = np.fft.rfft(strain)`.
+3. Divide by the square-root of the (interpolated) **power spectral density** (PSD) to whiten:
+   [
+   \text{white_hf}(f) = \frac{H(f)}{\sqrt{\text{PSD}(f)}} \times \text{norm}
+   ]
+   Here `interp_psd(freqs)` returns PSD values at those frequencies.
+4. Transform back to time domain: `np.fft.irfft(white_hf, n=Nt)`.
+
+**Returns:** the whitened time-series `white_ht`.
+
+**Notes / gotchas:**
+
+* `norm = 1./np.sqrt(1./(dt*2))` simplifies to `np.sqrt(2*dt)`. It’s a convention-dependent scaling to keep amplitudes sensible after the FFT/whitening; you’ll sometimes see different constants depending on FFT normalization choices.
+* `freqs1` is computed but never used—you can remove it.
+* Make sure `interp_psd(f)` never hits zero; add a small floor if needed to avoid division by zero.
+
+---
+
+### `write_wavfile(filename, fs, data)`
+
+**Goal:** save a floating-point waveform as a 16-bit PCM `.wav` at sample rate `fs`.
+
+**How it works:**
+
+1. Normalize to the 16-bit range using the data’s max absolute value, with a 0.9 safety factor to avoid clipping at exactly full scale:
+   [
+   d = \text{int16}!\Big(\frac{\text{data}}{\max| \text{data} |}\times 32767 \times 0.9 \Big)
+   ]
+2. Write to disk with `scipy.io.wavfile.write`.
+
+**Notes / gotchas:**
+
+* If `data` is all zeros, `np.max(np.abs(data))` is zero → division by zero. Guard for that (e.g., if max is 0, just write zeros).
+* This rescales dynamically per file; two files won’t be on the same absolute amplitude scale unless you normalize them consistently upstream.
+
+---
+
+### `reqshift(data, fshift=100, sample_rate=4096)`
+
+**Goal:** frequency-shift a real, band-passed signal upward by `fshift` Hz (approximately).
+
+**How it works:**
+
+1. Compute the RFFT: `x = np.fft.rfft(data)`.
+2. Figure out the bin spacing: with record length (T = N/\text{sample_rate}), the frequency resolution is `df = 1/T`. The number of bins to shift is `nbins = int(fshift/df)`.
+3. Circularly roll the spectrum by `nbins` bins: the code rolls real and imag parts separately and recombines (`np.roll(x, nbins)` would be equivalent). It then zeros out the first `nbins` bins (`y[0:nbins] = 0.`) to prevent wrapped-around content from appearing at the very low frequencies.
+4. Inverse RFFT back to time domain.
+
+**Returns:** the time-domain, frequency-shifted signal `z`.
+
+**Notes / gotchas:**
+
+* Because it’s a bin-based shift, the actual shift is `nbins * df` (an integer multiple of the bin width), not necessarily exactly `fshift`.
+* Large shifts can push content past Nyquist; the zeroing helps avoid wraparound but you’ll still lose content that “falls off” the top.
+* For complex baseband shifts, a time-domain heterodyne (`data * exp(2πifshift t)`) is another approach.
+
+---
+
+### `plot_results(time, timemax, SNR, pcolor, det, eventname, plottype, tevent, strain_whitenbp, template_match, template_fft, datafreq, d_eff, freqs, data_psd, fs)`
+
+**Goal:** generate and save three LIGO-style figures to the `figures/` folder:
+
+1. SNR time series, 2) whitened data vs template (and residual), 3) ASD vs template in frequency.
+
+**What it plots & saves:**
+
+1. **Matched-filter SNR vs time**
+
+   * Top: SNR over a window (label shifted by `timemax`).
+   * Bottom: zoomed view `xlim([-0.15, 0.05])`.
+   * Saved as: `figures/{eventname}_{det}_SNR.{plottype}`.
+
+2. **Whitened strain vs template and residual**
+
+   * Top: whitened, band-passed strain (`strain_whitenbp`) and the time-domain template (`template_match`) aligned around `tevent`.
+   * Bottom: residual = data − template.
+   * Both zoomed to `[-0.15, 0.05]` s.
+   * Saved as: `figures/{eventname}_{det}_matchtime.{plottype}`.
+
+3. **ASD and template (frequency domain)**
+
+   * Computes `template_f = |template_fft| * sqrt(|datafreq|) / d_eff` so it can be plotted on the same scale as the **amplitude spectral density** (ASD) `sqrt(data_psd)`.
+   * Log–log plot of `template_f` and the detector ASD over `[20, fs/2]`.
+   * Saved as: `figures/{eventname}_{det}_matchfreq.{plottype}`.
+
+**Parameters (key ones):**
+
+* `time`: time array (seconds).
+* `timemax`: time of max SNR (for labeling/centering).
+* `SNR`: matched-filter SNR time series.
+* `pcolor`: a Matplotlib color/format string (e.g., `'g'`, `'b-'`).
+* `det`: detector name (e.g., `H1`, `L1`) used in titles/labels.
+* `eventname`: used in filenames.
+* `plottype`: file extension, e.g., `'png'`, `'pdf'`.
+* `tevent`: reference event time for aligning data/template.
+* `strain_whitenbp`: whitened & band-passed strain in time domain.
+* `template_match`: template in time domain, aligned to event.
+* `template_fft`: template in frequency domain (complex).
+* `datafreq`: frequency axis for the template FFT (Hz).
+* `d_eff`: effective distance scaling factor for the template.
+* `freqs`, `data_psd`: frequency axis and PSD of the data.
+* `fs`: sampling rate (Hz).
+
+**Notes / gotchas:**
+
+* Assumes the folder `figures/` already exists; otherwise `plt.savefig(...)` will error—create it first.
+* Fixed axis limits might hide features if your windowing is different; adjust `xlim/ylim` if needed.
+* The frequency plot uses `np.sqrt(data_psd)` (ASD). Ensure `data_psd` and `freqs` correspond to the same estimator and windowing used to whiten.
+
+---
+
+If you want, I can add short docstrings to each function or tighten up small things (remove `freqs1`, guard the WAV normalization, simplify the FFT shift) so it’s cleaner and safer.
+
+3) What does each function return?
+
+* `whiten(strain, interp_psd, dt)` → **`white_ht`**: a 1-D `numpy.ndarray` (float), same length as `strain`.
+* `write_wavfile(filename, fs, data)` → **`None`** (side effect: writes a `.wav` file to disk).
+* `reqshift(data, fshift=100, sample_rate=4096)` → **`z`**: a 1-D `numpy.ndarray` (float), same length as `data`, frequency-shifted.
+* `plot_results(...)` → **`None`** (side effect: saves three figure files in `figures/`).
+
+4) How do you check whether the elements of an array are all finite?
+
+Use NumPy’s finiteness check:
+
+import numpy as np
+
+a = np.array([0.1, np.inf, -np.inf, np.nan, 3.14])
+
+# True if every element is finite (not inf and not NaN)
+all_finite = np.isfinite(a).all()   # or: np.all(np.isfinite(a))
+
+# If you want to fail fast:
+assert np.isfinite(a).all(), "Array has non-finite values"
+
+
+5) How can I check whether the elements of two arrays are not numerically similar?
+
+Here are reliable ways to check when two arrays **aren’t numerically similar**. Pick based on how strict you want to be:
+
+### 1) All-close (recommended default)
+
+Treat “similar” as within tolerances; then negate it.
+
+```python
+import numpy as np
+
+not_similar = not np.allclose(a, b, rtol=1e-6, atol=1e-9)
+```
+
+* Good for floats; ignores tiny round-off.
+* Tune `rtol`/`atol` to your needs.
+
+### 2) Any element differs beyond tolerance
+
+Elementwise check, then any:
+
+```python
+tol_r, tol_a = 1e-6, 1e-9
+not_similar = np.any(~np.isclose(a, b, rtol=tol_r, atol=tol_a))
+```
+
+### 3) Max absolute difference threshold
+
+Simple and strict on absolute scale:
+
+```python
+not_similar = np.max(np.abs(a - b)) > 1e-8
+```
+
+6)
+

@@ -1,2 +1,7 @@
-# MyST build outputs
-_build
+_build/
+.ipynb_checkpoints/
+.pytest_cache/
+audio/
+figures/
+ligotools.egg-info/
+
