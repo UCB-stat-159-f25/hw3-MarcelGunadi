@@ -229,5 +229,3 @@ Simple and strict on absolute scale:
 not_similar = np.max(np.abs(a - b)) > 1e-8
 ```
 
-6)
-
